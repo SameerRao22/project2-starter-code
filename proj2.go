@@ -76,25 +76,79 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
+func Pad(plaintext []byte, padsize int) (padded_message []byte) {
+	num_padding := padsize - (len(plaintext) % padsize)
+	var padding []byte
+	for i := 0; i < num_padding; i++ {
+		// padding[i] = byte(num_padding)
+		padding = append(padding, byte(num_padding))
+	}
+	padded_message = append(plaintext, padding...)
+	return
+}
+
+func Unpad(ciphertext []byte) (message []byte) {
+	num_padding := int(ciphertext[len(ciphertext)-1])
+	padding_index := len(ciphertext) - num_padding
+	message = ciphertext[:padding_index]
+	return
+}
+
 // User is the structure definition for a user record.
 type User struct {
-	Username string
-
+	Username       string
+	RSA_Secret_Key userlib.PKEDecKey
+	Files          map[string]uuid.UUID
+	HMAC_Key       []byte
+	UUID           uuid.UUID
+	Personal_Key   []byte
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
 }
 
+type FileMetaData struct {
+	Appends     int
+	Owner       []byte
+	Encrypt_Key []byte
+	HMAC_Key    []byte
+}
+
+type File struct {
+	content []byte
+}
+
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
-	userdataptr = &userdata
 
-	//TODO: This is a toy implementation.
+	var rsa_public userlib.PKEEncKey
+	var rsa_secret userlib.PKEDecKey
+	rsa_public, rsa_secret, _ = userlib.PKEKeyGen()
+
+	userlib.KeystoreSet(username, rsa_public)
+
 	userdata.Username = username
-	//End of toy implementation
+	userdata.RSA_Secret_Key = rsa_secret
+	//userdata.Storage_Key = userlib.Argon2Key([]byte(password), []byte(username), uint32(len(username)))
+	padded_username := Pad([]byte(username), 16)
+	userdata.UUID = bytesToUUID([]byte(padded_username))
 
-	return &userdata, nil
+	userdata.Personal_Key = userlib.Argon2Key([]byte(password), []byte(username), uint32(userlib.AESBlockSizeBytes))
+	userdata.HMAC_Key = userlib.Argon2Key([]byte(password), []byte(username), uint32(16))
+	userdata.Files = make(map[string]uuid.UUID)
+
+	marshal, _ := json.Marshal(userdata)
+	padded_marshal := Pad(marshal, userlib.AESBlockSizeBytes)
+	iv := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+	encrypted_marshal := userlib.SymEnc(userdata.Personal_Key, iv, padded_marshal)
+
+	hmac_tag, _ := userlib.HMACEval(userdata.HMAC_Key, encrypted_marshal)
+	secure_message := append(encrypted_marshal, hmac_tag...)
+
+	userlib.DatastoreSet(userdata.UUID, secure_message)
+	userdataptr = &userdata
+	return &userdata, err
 }
 
 // GetUser is documented at:
@@ -102,8 +156,35 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
+	_, user_found := userlib.KeystoreGet(username)
 
-	return userdataptr, nil
+	if !user_found {
+		return nil, errors.New("invalid user")
+	}
+	padded_username := Pad([]byte(username), 16)
+	UUID := bytesToUUID([]byte(padded_username))
+	key := userlib.Argon2Key([]byte(password), []byte(username), uint32(len(username)))
+	hmac_key := userlib.Argon2Key([]byte(password), []byte(username), uint32(16))
+	secure_text, login := userlib.DatastoreGet(UUID)
+
+	if !login {
+		return nil, errors.New("wrong password")
+	}
+
+	ciphertext := secure_text[:(len(secure_text) - userlib.HashSizeBytes)]
+	hmac_tag := secure_text[(len(secure_text) - userlib.HashSizeBytes):]
+	computed_tag, _ := userlib.HMACEval(hmac_key, ciphertext)
+	if !(userlib.HMACEqual(hmac_tag, computed_tag)) {
+		return nil, errors.New("integrity compromised")
+	}
+
+	unpadded_ciphertext := Unpad(ciphertext)
+	plaintext := userlib.SymDec(key, unpadded_ciphertext)
+	error := json.Unmarshal(plaintext, &userdata)
+	if error != nil {
+		return nil, errors.New("error with unmarshal")
+	}
+	return userdataptr, err
 }
 
 // StoreFile is documented at:

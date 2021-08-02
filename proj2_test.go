@@ -25,8 +25,30 @@ func clear() {
 
 func TestInit(t *testing.T) {
 	clear()
-	t.Log("Initialization test")
 
+	// foo := []byte("AAAAAAAAAAAA")
+	// fmt.Println("Padding")
+	// //foo: [104 101 108 108 111]
+	// fmt.Print("Foo: ")
+	// fmt.Println(foo)
+	// num_padding := 16 - (len(foo) % 16)
+	// fmt.Println(num_padding)
+	// var padding []byte
+	// for i := 0; i < num_padding; i++ {
+	// 	padding = append(padding, byte(num_padding))
+	// }
+	// foo = append(foo, padding...)
+	// fmt.Print("Padded: ")
+	// fmt.Println(foo)
+
+	// fmt.Println("Unpadding")
+	// num_padding_2 := int(foo[len(foo)-1])
+	// fmt.Println(num_padding_2)
+
+	// bar := foo[:(len(foo) - num_padding_2)]
+	// fmt.Println(bar)
+
+	t.Log("Initialization test")
 	// You can set this to false!
 	userlib.SetDebugStatus(true)
 
