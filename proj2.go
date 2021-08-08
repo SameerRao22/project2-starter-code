@@ -6,6 +6,8 @@ package proj2
 // break the autograder and everyone will be sad.
 
 import (
+	"fmt"
+
 	"github.com/cs161-staff/userlib"
 
 	// The JSON library will be useful for serializing go structs.
@@ -98,7 +100,7 @@ func Unpad(ciphertext []byte) (message []byte) {
 type User struct {
 	Username       string
 	RSA_Secret_Key userlib.PKEDecKey
-	Files          map[string]uuid.UUID
+	Files          map[string]FileStorage
 	HMAC_Key       []byte
 	UUID           uuid.UUID
 	Personal_Key   []byte
@@ -108,14 +110,24 @@ type User struct {
 }
 
 type FileMetaData struct {
-	Appends     int
-	Owner       []byte
-	Encrypt_Key []byte
-	HMAC_Key    []byte
+	Appends int
+	Owner   []byte
+}
+
+type FileStorage struct {
+	Meta_Data_Location uuid.UUID
+	Encrypt_Key        []byte
+	HMAC_Key           []byte
 }
 
 type File struct {
-	content []byte
+	Content []byte
+}
+
+type ShareInvitation struct {
+	Signature     []byte
+	Access_Key    []byte
+	File_Location uuid.UUID
 }
 
 // InitUser will be called a single time to initialize a new user.
@@ -136,7 +148,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	userdata.Personal_Key = userlib.Argon2Key([]byte(password), []byte(username), uint32(userlib.AESBlockSizeBytes))
 	userdata.HMAC_Key = userlib.Argon2Key([]byte(password), []byte(username), uint32(16))
-	userdata.Files = make(map[string]uuid.UUID)
+	userdata.Files = make(map[string]FileStorage)
 
 	marshal, _ := json.Marshal(userdata)
 	padded_marshal := Pad(marshal, userlib.AESBlockSizeBytes)
@@ -161,7 +173,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	if !user_found {
 		return nil, errors.New("invalid user")
 	}
-	padded_username := Pad([]byte(username), 16)
+	padded_username := Pad([]byte(username), userlib.AESBlockSizeBytes)
 	UUID := bytesToUUID([]byte(padded_username))
 	key := userlib.Argon2Key([]byte(password), []byte(username), uint32(len(username)))
 	hmac_key := userlib.Argon2Key([]byte(password), []byte(username), uint32(16))
@@ -171,8 +183,8 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 		return nil, errors.New("wrong password")
 	}
 
-	ciphertext := secure_text[:(len(secure_text) - userlib.HashSizeBytes)]
-	hmac_tag := secure_text[(len(secure_text) - userlib.HashSizeBytes):]
+	ciphertext := secure_text[:(len(secure_text) - 16)]
+	hmac_tag := secure_text[(len(secure_text) - 16):]
 	computed_tag, _ := userlib.HMACEval(hmac_key, ciphertext)
 	if !(userlib.HMACEqual(hmac_tag, computed_tag)) {
 		return nil, errors.New("integrity compromised")
@@ -180,6 +192,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 
 	unpadded_ciphertext := Unpad(ciphertext)
 	plaintext := userlib.SymDec(key, unpadded_ciphertext)
+	plaintext = Unpad(plaintext)
 	error := json.Unmarshal(plaintext, &userdata)
 	if error != nil {
 		return nil, errors.New("error with unmarshal")
@@ -192,54 +205,253 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 	//TODO: This is a toy implementation.
-	storageKey, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	jsonData, _ := json.Marshal(data)
-	userlib.DatastoreSet(storageKey, jsonData)
-	//End of toy implementation
+	meta_storage_location := uuid.New()
+	encryption_key := userlib.Argon2Key([]byte(uuid.New().String()), userlib.RandomBytes(16), uint32(userlib.AESBlockSizeBytes))
+	hmac_key := userlib.Argon2Key([]byte(uuid.New().String()), userlib.RandomBytes(16), uint32(16))
 
+	owner_key, _ := userlib.KeystoreGet(userdata.Username)
+	encrypted_owner, _ := userlib.PKEEnc(owner_key, []byte(userdata.Username))
+
+	changes := 0
+	meta_data := FileMetaData{changes, encrypted_owner}
+
+	marshaled_meta_data, _ := json.Marshal(meta_data)
+
+	meta_string := meta_storage_location.String()
+	new_file_name := meta_string + string(rune(changes))
+	file_storage_location, _ := uuid.FromBytes([]byte(new_file_name))
+	new_file := File{data}
+
+	marshaled_new_file, _ := json.Marshal(new_file)
+
+	padded_meta := Pad(marshaled_meta_data, userlib.AESBlockSizeBytes)
+	padded_file := Pad(marshaled_new_file, userlib.AESBlockSizeBytes)
+
+	encrypted_meta := userlib.SymEnc(encryption_key, userlib.RandomBytes(16), padded_meta)
+	encrypted_file := userlib.SymEnc(encryption_key, userlib.RandomBytes(16), padded_file)
+
+	meta_hmac_tag, _ := userlib.HMACEval(hmac_key, encrypted_meta)
+	file_hmac_tag, _ := userlib.HMACEval(hmac_key, encrypted_file)
+
+	mac_meta := append(encrypted_meta, meta_hmac_tag...)
+	mac_file := append(encrypted_file, file_hmac_tag...)
+
+	userlib.DatastoreSet(meta_storage_location, mac_meta)
+	userlib.DatastoreSet(file_storage_location, mac_file)
+
+	userdata.Files[filename] = FileStorage{meta_storage_location, encryption_key, hmac_key}
+
+	marshaled_user, _ := json.Marshal(userdata)
+	padded_user := Pad(marshaled_user, userlib.AESBlockSizeBytes)
+	userdata_encrypted := userlib.SymEnc(userdata.Personal_Key, userlib.RandomBytes(16), padded_user)
+	user_hmac_tag, _ := userlib.HMACEval(userdata.HMAC_Key, userdata_encrypted)
+
+	user_ciphertext := append(userdata_encrypted, user_hmac_tag...)
+	userlib.DatastoreSet(userdata.UUID, user_ciphertext)
+	// storageKey, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
+	// jsonData, _ := json.Marshal(data)
+	// userlib.DatastoreSet(storageKey, jsonData)
+	//End of toy implementation
 	return
 }
 
 // AppendFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/appendfile.html
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
-	return
+	var meta_data FileMetaData
+
+	user_files := userdata.Files[filename]
+	meta_ciphertext, _ := userlib.DatastoreGet(user_files.Meta_Data_Location)
+
+	encrypted_meta := meta_ciphertext[:(len(meta_ciphertext) - 16)]
+	hmac_meta := meta_ciphertext[(len(meta_ciphertext) - 16):]
+
+	hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta)
+
+	if !(userlib.HMACEqual(hmac_meta, hmac_test)) {
+		return errors.New("integrity compromised")
+	}
+
+	plaintext := userlib.SymDec(user_files.Encrypt_Key, encrypted_meta)
+	plaintext = Unpad(plaintext)
+
+	error := json.Unmarshal(plaintext, &meta_data)
+	if error != nil {
+		return errors.New("error with unmarshal")
+	}
+
+	meta_string := user_files.Meta_Data_Location.String()
+	new_file_name := meta_string + string(rune(meta_data.Appends+1))
+	meta_data.Appends += 1
+	file_storage_location, _ := uuid.FromBytes([]byte(new_file_name))
+
+	new_file := File{data}
+
+	marshaled_file, _ := json.Marshal(new_file)
+	padded_file := Pad(marshaled_file, userlib.AESBlockSizeBytes)
+	encrypted_file := userlib.SymEnc(user_files.Encrypt_Key, userlib.RandomBytes(16), padded_file)
+	tag_file, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_file)
+	hmac_file := append(encrypted_file, tag_file...)
+
+	userlib.DatastoreSet(file_storage_location, hmac_file)
+
+	marshaled_meta, _ := json.Marshal(meta_data)
+	padded_meta := Pad(marshaled_meta, userlib.AESBlockSizeBytes)
+	encrypted_meta_2 := userlib.SymEnc(user_files.Encrypt_Key, userlib.RandomBytes(16), padded_meta)
+	tag_meta, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta_2)
+	hmac_meta_2 := append(encrypted_meta_2, tag_meta...)
+	userlib.DatastoreSet(user_files.Meta_Data_Location, hmac_meta_2)
+
+	return err
 }
 
 // LoadFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/loadfile.html
 func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
+	var meta_data FileMetaData
 
-	//TODO: This is a toy implementation.
-	storageKey, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	dataJSON, ok := userlib.DatastoreGet(storageKey)
-	if !ok {
-		return nil, errors.New(strings.ToTitle("File not found!"))
+	user_files := userdata.Files[filename]
+	meta_ciphertext, valid_file := userlib.DatastoreGet(user_files.Meta_Data_Location)
+	if !valid_file {
+		return nil, errors.New("file not found")
 	}
-	json.Unmarshal(dataJSON, &dataBytes)
-	return dataBytes, nil
-	//End of toy implementation
 
-	return
+	encrypted_meta := meta_ciphertext[:(len(meta_ciphertext) - 16)]
+	hmac_meta := meta_ciphertext[(len(meta_ciphertext) - 16):]
+
+	hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta)
+	if !(userlib.HMACEqual(hmac_meta, hmac_test)) {
+		return nil, errors.New("integrity compromised")
+	}
+
+	plaintext := userlib.SymDec(user_files.Encrypt_Key, encrypted_meta)
+	plaintext = Unpad(plaintext)
+
+	error := json.Unmarshal(plaintext, &meta_data)
+	if error != nil {
+		return nil, errors.New("error with unmarshal")
+	}
+
+	for i := 0; i <= meta_data.Appends; i++ {
+		var file File
+		meta_string := user_files.Meta_Data_Location.String()
+		location, _ := uuid.FromBytes([]byte(meta_string + string(rune(i))))
+
+		secure_file, _ := userlib.DatastoreGet(location)
+		encrypted_file := secure_file[:(len(secure_file) - 16)]
+		file_hmac := secure_file[(len(secure_file) - 16):]
+
+		fmt.Println("Load File Part 2")
+		file_hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_file)
+		if !(userlib.HMACEqual(file_hmac, file_hmac_test)) {
+			return nil, errors.New("integrity compromised")
+		}
+
+		file_plaintext := userlib.SymDec(user_files.Encrypt_Key, encrypted_file)
+		file_plaintext = Unpad(file_plaintext)
+
+		unmarshal_error := json.Unmarshal(file_plaintext, &file)
+		if unmarshal_error != nil {
+			return nil, errors.New("error with unmarshal")
+		}
+		dataBytes = append(dataBytes, file.Content...)
+	}
+	return dataBytes, err
 }
 
 // ShareFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/sharefile.html
 func (userdata *User) ShareFile(filename string, recipient string) (
 	accessToken uuid.UUID, err error) {
+	public_key, valid := userlib.KeystoreGet(recipient)
 
-	return
+	if !valid {
+		return uuid.Nil, errors.New("invalid recipient")
+	}
+
+	user_files := userdata.Files[filename]
+	access_token := append(user_files.Encrypt_Key, user_files.HMAC_Key...)
+	cipher_text, _ := userlib.PKEEnc(public_key, access_token)
+	signature, _ := userlib.DSSign(userdata.RSA_Secret_Key, cipher_text)
+	invitation := ShareInvitation{signature, cipher_text, user_files.Meta_Data_Location}
+
+	marhsal_invitation, _ := json.Marshal(invitation)
+	accessToken = uuid.New()
+	userlib.DatastoreSet(accessToken, marhsal_invitation)
+
+	return accessToken, err
 }
 
 // ReceiveFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/receivefile.html
 func (userdata *User) ReceiveFile(filename string, sender string,
 	accessToken uuid.UUID) error {
-	return nil
+	var invitation ShareInvitation
+	public_key, valid := userlib.KeystoreGet(sender)
+
+	if !valid {
+		return errors.New("invalid user")
+	}
+
+	marshal_invitation, exists := userlib.DatastoreGet(accessToken)
+	if !exists {
+		return errors.New("file not found")
+	}
+	error := json.Unmarshal(marshal_invitation, &invitation)
+	if error != nil {
+		return errors.New("error with unmarshal")
+	}
+
+	error = userlib.DSVerify(public_key, invitation.Access_Key, invitation.Signature)
+	access_token, error := userlib.PKEDec(userdata.RSA_Secret_Key, invitation.Access_Key)
+	key := access_token[:(len(accessToken) - 16)]
+	hmac := accessToken[(len(accessToken) - 16):]
+
+	userdata.Files[filename] = FileStorage{invitation.File_Location, key, hmac}
+	marshaled_user, _ := json.Marshal(userdata)
+	marshaled_user = Pad(marshaled_user, userlib.AESBlockSizeBytes)
+	encrypted_user := userlib.SymEnc(userdata.Personal_Key, userlib.RandomBytes(16), marshaled_user)
+	user_hmac, _ := userlib.HMACEval(userdata.HMAC_Key, encrypted_user)
+	ciphertext := append(encrypted_user, user_hmac...)
+	userlib.DatastoreSet(userdata.UUID, ciphertext)
+	return error
 }
 
 // RevokeFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/revokefile.html
 func (userdata *User) RevokeFile(filename string, targetUsername string) (err error) {
-	return
+	var meta_data FileMetaData
+	user_files := userdata.Files[filename]
+	file_key := user_files.Encrypt_Key
+	file_hmac_key := user_files.HMAC_Key
+
+	secure_meta, exists := userlib.DatastoreGet(user_files.Meta_Data_Location)
+
+	if !exists {
+		return errors.New("file not found")
+	}
+
+	encrypted_meta := secure_meta[:(len(secure_meta) - 16)]
+	hmac_meta := secure_meta[(len(secure_meta) - 16):]
+	hmac_test, _ := userlib.HMACEval(file_hmac_key, encrypted_meta)
+	if !userlib.HMACEqual(hmac_meta, hmac_test) {
+		return errors.New("integrity compromised")
+	}
+	marshaled_meta := userlib.SymDec(file_key, encrypted_meta)
+	marshaled_meta = Unpad(marshaled_meta)
+
+	error := json.Unmarshal(marshaled_meta, &meta_data)
+	if error != nil {
+		return errors.New("error with unmarshal")
+	}
+
+	owner, _ := userlib.PKEDec(userdata.RSA_Secret_Key, meta_data.Owner)
+	if string(owner) != userdata.Username {
+		return errors.New("user is not the owner")
+	}
+
+	new_encryption_key := userlib.Argon2Key([]byte(uuid.New().String()), userlib.RandomBytes(16), uint32(userlib.AESBlockSizeBytes))
+	new_hmac_key := userlib.Argon2Key([]byte(uuid.New().String()), userlib.RandomBytes(16), uint32(16))
+
+	return err
 }
