@@ -6,8 +6,6 @@ package proj2
 // break the autograder and everyone will be sad.
 
 import (
-	"fmt"
-
 	"github.com/cs161-staff/userlib"
 
 	// The JSON library will be useful for serializing go structs.
@@ -232,10 +230,10 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 	meta_hmac_tag, _ := userlib.HMACEval(hmac_key, encrypted_meta)
 	file_hmac_tag, _ := userlib.HMACEval(hmac_key, encrypted_file)
-	fmt.Print("Meta HMAC: ")
-	fmt.Println(meta_hmac_tag)
-	fmt.Print("HMAC Length: ")
-	fmt.Println(len(meta_hmac_tag))
+	// fmt.Print("Meta HMAC: ")
+	// fmt.Println(meta_hmac_tag)
+	// fmt.Print("Store File HMAC Key: ")
+	// fmt.Println(hmac_key)
 
 	mac_meta := append(encrypted_meta, meta_hmac_tag...)
 	mac_file := append(encrypted_file, file_hmac_tag...)
@@ -272,7 +270,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta)
 	if !(userlib.HMACEqual(hmac_meta, hmac_test)) {
-		fmt.Println("Append File #1")
+		// fmt.Println("Append File #1")
 		return errors.New("integrity compromised")
 	}
 
@@ -328,12 +326,14 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 	hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta)
 
 	if !(userlib.HMACEqual(hmac_meta, hmac_test)) {
-		fmt.Println("Load File #1")
-		fmt.Print("HMAC 1: ")
-		fmt.Println(hmac_meta)
-		fmt.Print("HMAC 2: ")
-		fmt.Println(hmac_test)
-		fmt.Println()
+		// fmt.Println("Load File #1")
+		// fmt.Print("HMAC 1: ")
+		// fmt.Println(hmac_meta)
+		// fmt.Print("HMAC 2: ")
+		// fmt.Println(hmac_test)
+		// fmt.Println()
+		// fmt.Print("Load File HMAC Key: ")
+		// fmt.Println(user_files.HMAC_Key)
 		return nil, errors.New("integrity compromised")
 	}
 
@@ -356,7 +356,7 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 
 		file_hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_file)
 		if !(userlib.HMACEqual(file_hmac, file_hmac_test)) {
-			fmt.Println("Load File Part 2")
+			// fmt.Println("Load File Part 2")
 			return nil, errors.New("integrity compromised")
 		}
 
@@ -384,6 +384,10 @@ func (userdata *User) ShareFile(filename string, recipient string) (
 
 	user_files := userdata.Files[filename]
 	access_token := append(user_files.Encrypt_Key, user_files.HMAC_Key...)
+	// fmt.Print("Access Token #1: ")
+	// fmt.Println(access_token)
+	// fmt.Print("Share File HMAC Key: ")
+	// fmt.Println(user_files.HMAC_Key)
 	cipher_text, _ := userlib.PKEEnc(public_key, access_token)
 	signature, _ := userlib.DSSign(userdata.RSA_Secret_Key, cipher_text)
 	invitation := ShareInvitation{signature, cipher_text, user_files.Meta_Data_Location}
@@ -417,8 +421,12 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 
 	error = userlib.DSVerify(public_key, invitation.Access_Key, invitation.Signature)
 	access_token, error := userlib.PKEDec(userdata.RSA_Secret_Key, invitation.Access_Key)
-	key := access_token[:(len(accessToken) - 16)]
-	hmac := accessToken[(len(accessToken) - 16):]
+	// fmt.Print("Access Token #2: ")
+	// fmt.Println(access_token)
+	key := access_token[:16]
+	hmac := access_token[16:]
+	// fmt.Print("Received HMAC Key: ")
+	// fmt.Println(hmac)
 
 	userdata.Files[filename] = FileStorage{invitation.File_Location, key, hmac}
 	marshaled_user, _ := json.Marshal(userdata)
@@ -448,7 +456,7 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	hmac_meta := secure_meta[(len(secure_meta) - 64):]
 	hmac_test, _ := userlib.HMACEval(file_hmac_key, encrypted_meta)
 	if !userlib.HMACEqual(hmac_meta, hmac_test) {
-		fmt.Println("Revoke File Part 1")
+		// fmt.Println("Revoke File Part 1")
 		return errors.New("integrity compromised")
 	}
 	marshaled_meta := userlib.SymDec(file_key, encrypted_meta)
@@ -480,11 +488,11 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		location, _ := uuid.FromBytes([]byte(meta_string + string(rune(i))))
 		encrypted_file, _ := userlib.DatastoreGet(location)
 		ciphertext := encrypted_file[:(len(encrypted_file) - 64)]
-		hmac := encrypted_file[(len(encrypted_file) - 64):]
+		hmac := encrypted_file[(len(encrypted_file) - 16):]
 		hmac_test, _ := userlib.HMACEval(file_hmac_key, encrypted_file)
 
 		if !(userlib.HMACEqual(hmac, hmac_test)) {
-			fmt.Println("Revoke File Part 2")
+			// fmt.Println("Revoke File Part 2")
 			return errors.New("integrity compromised")
 		}
 
