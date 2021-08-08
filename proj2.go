@@ -151,7 +151,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	userdata.Files = make(map[string]FileStorage)
 
 	marshal, _ := json.Marshal(userdata)
-	padded_marshal := Pad(marshal, userlib.AESBlockSizeBytes)
+	padded_marshal := Pad(marshal, 16)
 	iv := userlib.RandomBytes(userlib.AESBlockSizeBytes)
 	encrypted_marshal := userlib.SymEnc(userdata.Personal_Key, iv, padded_marshal)
 
@@ -173,7 +173,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	if !user_found {
 		return nil, errors.New("invalid user")
 	}
-	padded_username := Pad([]byte(username), userlib.AESBlockSizeBytes)
+	padded_username := Pad([]byte(username), 16)
 	UUID := bytesToUUID([]byte(padded_username))
 	key := userlib.Argon2Key([]byte(password), []byte(username), uint32(len(username)))
 	hmac_key := userlib.Argon2Key([]byte(password), []byte(username), uint32(16))
@@ -224,14 +224,18 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 	marshaled_new_file, _ := json.Marshal(new_file)
 
-	padded_meta := Pad(marshaled_meta_data, userlib.AESBlockSizeBytes)
-	padded_file := Pad(marshaled_new_file, userlib.AESBlockSizeBytes)
+	padded_meta := Pad(marshaled_meta_data, 16)
+	padded_file := Pad(marshaled_new_file, 16)
 
 	encrypted_meta := userlib.SymEnc(encryption_key, userlib.RandomBytes(16), padded_meta)
 	encrypted_file := userlib.SymEnc(encryption_key, userlib.RandomBytes(16), padded_file)
 
 	meta_hmac_tag, _ := userlib.HMACEval(hmac_key, encrypted_meta)
 	file_hmac_tag, _ := userlib.HMACEval(hmac_key, encrypted_file)
+	fmt.Print("Meta HMAC: ")
+	fmt.Println(meta_hmac_tag)
+	fmt.Print("HMAC Length: ")
+	fmt.Println(len(meta_hmac_tag))
 
 	mac_meta := append(encrypted_meta, meta_hmac_tag...)
 	mac_file := append(encrypted_file, file_hmac_tag...)
@@ -242,7 +246,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	userdata.Files[filename] = FileStorage{meta_storage_location, encryption_key, hmac_key}
 
 	marshaled_user, _ := json.Marshal(userdata)
-	padded_user := Pad(marshaled_user, userlib.AESBlockSizeBytes)
+	padded_user := Pad(marshaled_user, 16)
 	userdata_encrypted := userlib.SymEnc(userdata.Personal_Key, userlib.RandomBytes(16), padded_user)
 	user_hmac_tag, _ := userlib.HMACEval(userdata.HMAC_Key, userdata_encrypted)
 
@@ -267,8 +271,8 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	hmac_meta := meta_ciphertext[(len(meta_ciphertext) - 16):]
 
 	hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta)
-
 	if !(userlib.HMACEqual(hmac_meta, hmac_test)) {
+		fmt.Println("Append File #1")
 		return errors.New("integrity compromised")
 	}
 
@@ -288,7 +292,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	new_file := File{data}
 
 	marshaled_file, _ := json.Marshal(new_file)
-	padded_file := Pad(marshaled_file, userlib.AESBlockSizeBytes)
+	padded_file := Pad(marshaled_file, 16)
 	encrypted_file := userlib.SymEnc(user_files.Encrypt_Key, userlib.RandomBytes(16), padded_file)
 	tag_file, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_file)
 	hmac_file := append(encrypted_file, tag_file...)
@@ -296,7 +300,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	userlib.DatastoreSet(file_storage_location, hmac_file)
 
 	marshaled_meta, _ := json.Marshal(meta_data)
-	padded_meta := Pad(marshaled_meta, userlib.AESBlockSizeBytes)
+	padded_meta := Pad(marshaled_meta, 16)
 	encrypted_meta_2 := userlib.SymEnc(user_files.Encrypt_Key, userlib.RandomBytes(16), padded_meta)
 	tag_meta, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta_2)
 	hmac_meta_2 := append(encrypted_meta_2, tag_meta...)
@@ -316,11 +320,20 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 		return nil, errors.New("file not found")
 	}
 
-	encrypted_meta := meta_ciphertext[:(len(meta_ciphertext) - 16)]
-	hmac_meta := meta_ciphertext[(len(meta_ciphertext) - 16):]
+	// encrypted_meta := meta_ciphertext[:(len(meta_ciphertext) - 16)]
+	// hmac_meta := meta_ciphertext[(len(meta_ciphertext) - 16):]
+	encrypted_meta := meta_ciphertext[:(len(meta_ciphertext) - 64)]
+	hmac_meta := meta_ciphertext[(len(meta_ciphertext) - 64):]
 
 	hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_meta)
+
 	if !(userlib.HMACEqual(hmac_meta, hmac_test)) {
+		fmt.Println("Load File #1")
+		fmt.Print("HMAC 1: ")
+		fmt.Println(hmac_meta)
+		fmt.Print("HMAC 2: ")
+		fmt.Println(hmac_test)
+		fmt.Println()
 		return nil, errors.New("integrity compromised")
 	}
 
@@ -338,12 +351,12 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 		location, _ := uuid.FromBytes([]byte(meta_string + string(rune(i))))
 
 		secure_file, _ := userlib.DatastoreGet(location)
-		encrypted_file := secure_file[:(len(secure_file) - 16)]
-		file_hmac := secure_file[(len(secure_file) - 16):]
+		encrypted_file := secure_file[:(len(secure_file) - 64)]
+		file_hmac := secure_file[(len(secure_file) - 64):]
 
-		fmt.Println("Load File Part 2")
 		file_hmac_test, _ := userlib.HMACEval(user_files.HMAC_Key, encrypted_file)
 		if !(userlib.HMACEqual(file_hmac, file_hmac_test)) {
+			fmt.Println("Load File Part 2")
 			return nil, errors.New("integrity compromised")
 		}
 
@@ -409,7 +422,7 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 
 	userdata.Files[filename] = FileStorage{invitation.File_Location, key, hmac}
 	marshaled_user, _ := json.Marshal(userdata)
-	marshaled_user = Pad(marshaled_user, userlib.AESBlockSizeBytes)
+	marshaled_user = Pad(marshaled_user, 16)
 	encrypted_user := userlib.SymEnc(userdata.Personal_Key, userlib.RandomBytes(16), marshaled_user)
 	user_hmac, _ := userlib.HMACEval(userdata.HMAC_Key, encrypted_user)
 	ciphertext := append(encrypted_user, user_hmac...)
@@ -431,10 +444,11 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		return errors.New("file not found")
 	}
 
-	encrypted_meta := secure_meta[:(len(secure_meta) - 16)]
-	hmac_meta := secure_meta[(len(secure_meta) - 16):]
+	encrypted_meta := secure_meta[:(len(secure_meta) - 64)]
+	hmac_meta := secure_meta[(len(secure_meta) - 64):]
 	hmac_test, _ := userlib.HMACEval(file_hmac_key, encrypted_meta)
 	if !userlib.HMACEqual(hmac_meta, hmac_test) {
+		fmt.Println("Revoke File Part 1")
 		return errors.New("integrity compromised")
 	}
 	marshaled_meta := userlib.SymDec(file_key, encrypted_meta)
@@ -453,5 +467,40 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	new_encryption_key := userlib.Argon2Key([]byte(uuid.New().String()), userlib.RandomBytes(16), uint32(userlib.AESBlockSizeBytes))
 	new_hmac_key := userlib.Argon2Key([]byte(uuid.New().String()), userlib.RandomBytes(16), uint32(16))
 
+	marshaled_meta_2, _ := json.Marshal(meta_data)
+	marshaled_meta_2 = Pad(marshaled_meta_2, 16)
+	encrypted_meta_2 := userlib.SymEnc(new_encryption_key, userlib.RandomBytes(16), marshaled_meta_2)
+	new_hmac_tag, _ := userlib.HMACEval(new_hmac_key, marshaled_meta_2)
+	encrypted_meta_2 = append(encrypted_meta_2, new_hmac_tag...)
+	userlib.DatastoreSet(user_files.Meta_Data_Location, encrypted_meta_2)
+
+	appends := meta_data.Appends
+	for i := 0; i <= appends; i++ {
+		meta_string := user_files.Meta_Data_Location.String()
+		location, _ := uuid.FromBytes([]byte(meta_string + string(rune(i))))
+		encrypted_file, _ := userlib.DatastoreGet(location)
+		ciphertext := encrypted_file[:(len(encrypted_file) - 64)]
+		hmac := encrypted_file[(len(encrypted_file) - 64):]
+		hmac_test, _ := userlib.HMACEval(file_hmac_key, encrypted_file)
+
+		if !(userlib.HMACEqual(hmac, hmac_test)) {
+			fmt.Println("Revoke File Part 2")
+			return errors.New("integrity compromised")
+		}
+
+		plaintext := userlib.SymDec(file_key, ciphertext)
+
+		new_ciphertext := userlib.SymEnc(new_encryption_key, userlib.RandomBytes(16), plaintext)
+		new_file_hmac_tag, _ := userlib.HMACEval(new_hmac_key, new_ciphertext)
+		new_ciphertext = append(new_ciphertext, new_file_hmac_tag...)
+		userlib.DatastoreSet(location, new_ciphertext)
+	}
+	userdata.Files[filename] = FileStorage{user_files.Meta_Data_Location, new_encryption_key, new_hmac_key}
+
+	updated_userdata, _ := json.Marshal(userdata)
+	updated_userdata = userlib.SymEnc(userdata.Personal_Key, userlib.RandomBytes(16), updated_userdata)
+	userdata_hmac, _ := userlib.HMACEval(userdata.HMAC_Key, updated_userdata)
+	updated_userdata = append(updated_userdata, userdata_hmac...)
+	userlib.DatastoreSet(userdata.UUID, updated_userdata)
 	return err
 }
