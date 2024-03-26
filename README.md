@@ -1,2 +1,2 @@
 # project2-starter-code
-Code for CS161 Project 2
+Secure File Sharing System for CS161 Project 2
